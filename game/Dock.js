@@ -13,8 +13,10 @@
 const UNLOAD_INTERVAL = 1.75;
 const FLASH_DURATION  = 0.55;  // seconds for wrong-color red flash
 
-// How close a boat must be to its assigned dock to start unloading.
-export const DOCK_APPROACH_RADIUS = 55;
+// Catch radius — a matching-color ship this close is forcefully pulled in and
+// locked. Matched to the land-collision skip radius (90px) so there is no ring
+// where a ship neither docks nor bounces (which is what let ships clip land).
+export const DOCK_APPROACH_RADIUS = 90;
 
 export class Dock {
   /**
@@ -44,23 +46,38 @@ export class Dock {
   // ---------- Gameplay ----------
 
   /**
-   * Snap the boat to dock center and begin unloading.
+   * Reserve this berth and send the boat into a DOCKING approach. The boat
+   * physically sails the rest of the way to the berth center and aligns its
+   * bow to the dock's inward angle — NO teleport. Boat._updateDocking() flips
+   * it to UNLOADING once it has arrived and aligned.
    */
-  startUnloading(boat) {
-    this.occupied      = true;
+  beginDocking(boat) {
+    this.occupied      = true;   // reserve immediately so no other boat targets it
     this.unloadingBoat = boat;
     this.unloadTimer   = 0;
 
-    const c = this.center;
-    boat.x = c.x;
-    boat.y = c.y;
     boat.clearPath();
-    boat.state = 'UNLOADING';
+    boat.dockTarget = this;
+    boat.dockCenter = { x: this.cx, y: this.cy };
+    boat.dockAngle  = (this.inwardAngle != null) ? this.inwardAngle : boat.angle;
+    boat.state      = 'DOCKING';
   }
 
   /** Trigger a brief red flash. */
   flashWrongColor() {
     this.flashTimer = FLASH_DURATION;
+  }
+
+  /**
+   * Unloading finished: park the boat in WAITING_EXIT and have it immediately
+   * turn to face the ocean (opposite the inward dock pose) while it waits.
+   */
+  _sendToWaitingExit(boat) {
+    boat.state = 'WAITING_EXIT';
+    boat.clearPath();
+    boat.exitAngle = (boat.dockAngle != null)
+      ? boat.dockAngle + Math.PI
+      : boat.angle + Math.PI;
   }
 
   /**
@@ -75,31 +92,21 @@ export class Dock {
 
     const boat = this.unloadingBoat;
 
-    // Mixed cargo: once the primary blocks are unloaded here, switch the boat
-    // to its secondary color and send it back out to find a second dock.
-    if (boat.mixedCargo &&
-        boat.cargoRemaining === (boat.cargoCount - boat.primaryCargoCount)) {
-      boat.cargoColor    = boat.secondaryColor;
-      boat.mixedCargo    = false;  // now a normal boat for the secondary dock
-      boat.state         = 'SAILING';
-      boat.clearPath();
-      this.occupied      = false;
-      this.unloadingBoat = null;
-      return;
-    }
+    // Still sailing into the berth — hold the reservation but don't unload yet.
+    if (boat.state === 'DOCKING') return;
 
-    // Cargo emptied: hold the berth while the boat waits for the player to draw
-    // an exit path. Release the dock only once the boat actually departs
-    // (Boat.update flips WAITING_EXIT → EXITING when a path is assigned). This
-    // prevents a freshly-assigned boat from being routed onto the waiting one.
-    if (boat.cargoRemaining === 0) {
-      // Set boat to wait for an exit path once unloading is done.
+    // This dock unloads ONLY the blocks matching its own color. Mixed ships keep
+    // their other-color cargo aboard for a later dock.
+    const colorLeft = boat.cargoForColor(this.color);
+
+    // This dock's color is fully unloaded → wait for an exit path (keeping any
+    // remaining other-color cargo). Release the berth once the boat departs and
+    // has moved clear of it (>80px). A still-loaded ship resumes SAILING (so it
+    // can dock again); an empty ship goes EXITING.
+    if (colorLeft === 0) {
       if (boat.state === 'UNLOADING') {
-        boat.state = 'WAITING_EXIT';
-        boat.clearPath();
+        this._sendToWaitingExit(boat);
       }
-      // Release the dock only once the boat has departed (no longer waiting)
-      // AND has actually moved clear of the berth (>80px from center).
       if (boat.state !== 'WAITING_EXIT') {
         const dist = Math.hypot(boat.x - this.cx, boat.y - this.cy);
         if (dist > 80) {
@@ -113,13 +120,12 @@ export class Dock {
     this.unloadTimer += dt;
     if (this.unloadTimer >= UNLOAD_INTERVAL) {
       this.unloadTimer -= UNLOAD_INTERVAL;
-      boat.cargoRemaining = Math.max(0, boat.cargoRemaining - 1);
+      boat.removeCargoOfColor(this.color);
       onPlink?.();
 
-      if (boat.cargoRemaining === 0) {
-        // Finished — wait at the dock for the player to draw an exit path.
-        boat.state = 'WAITING_EXIT';
-        boat.clearPath();
+      if (boat.cargoForColor(this.color) === 0) {
+        // This dock's cargo is done — turn to face the ocean and wait for a path.
+        this._sendToWaitingExit(boat);
         // Berth stays occupied until the boat leaves (handled above next tick).
       }
     }

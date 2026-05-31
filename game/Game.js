@@ -17,7 +17,7 @@ import { Collision } from './Collision.js';
 import { DebugOverlay } from './DebugOverlay.js';
 import { BOAT_STATES } from './Boat.js';
 import { DOCK_APPROACH_RADIUS } from './Dock.js';
-import { Vortex, VORTEX_RADIUS } from './Vortex.js';
+import { Vortex } from './Vortex.js';
 
 // --- Game constants ---
 export const CANVAS_WIDTH  = 1024;
@@ -35,7 +35,7 @@ export const DOCK_COLORS = ['#FFD700', '#8B5CF6'];   // yellow, purple
 export const BOAT_SPEEDS = { small: 120, medium: 80, large: 50 }; // px / second
 export const UNLOAD_TIME_PER_CARGO = 1750; // ms per cargo block
 export const CARGO_COUNTS = { small: 1, medium: 2, large: 4 };
-export const VORTEX_DURATION = 7000; // ms
+export const VORTEX_DURATION = 15000; // ms — vortex stays active for 15 seconds
 // Boat-to-boat collision now uses per-boat ellipse half-dimensions (hw/hh),
 // set on each Boat from its measured sprite size — see Boat.js / Collision.js.
 
@@ -43,6 +43,7 @@ export const GAME_STATES = {
   LOADING: 'LOADING',
   MENU: 'MENU',
   PLAYING: 'PLAYING',
+  PAUSED: 'PAUSED',
   GAMEOVER: 'GAMEOVER',
 };
 
@@ -75,7 +76,7 @@ export class Game {
     this._hornCooldown = 0;
 
     // Vortex spawning: first at score 70 (difficulty tier 5), then every 25.
-    this._nextVortexAt = 70;
+    this._nextVortexAt = 16;
 
     // Game-over animation state.
     this.impactBurst  = null;  // { x, y, elapsed } — expanding ring on collision
@@ -91,6 +92,11 @@ export class Game {
       height: 96,
     };
 
+    // Pause button (top-right of HUD) + pause-menu buttons (set when drawn).
+    this.pauseButton  = { x: CANVAS_WIDTH - 44, y: 6, width: 32, height: 32 };
+    this._resumeBtn   = null;
+    this._quitBtn     = null;
+
     this._loop = this._loop.bind(this);
     this._bindInput();
   }
@@ -104,7 +110,42 @@ export class Game {
       console.error('[Game] asset loading error', err);
     }
     this.map = new GameMap(this.assets, CANVAS_WIDTH, CANVAS_HEIGHT);
+    this._computeDockInwardAngles();
     this.setState(GAME_STATES.MENU);
+  }
+
+  /**
+   * For each dock, derive the "inward" heading (toward the attached landmass)
+   * from the collision map. Boats align their bow to this when docking.
+   */
+  _computeDockInwardAngles() {
+    if (!this.map) return;
+    for (const dock of this.map.docks) {
+      let sx = 0, sy = 0, hits = 0;
+      for (const R of [25, 40, 55]) {
+        for (let i = 0; i < 24; i++) {
+          const a  = (i / 24) * Math.PI * 2;
+          const px = dock.cx + Math.cos(a) * R;
+          const py = dock.cy + Math.sin(a) * R;
+          if (this.map.isLand(px, py)) { sx += Math.cos(a); sy += Math.sin(a); hits++; }
+        }
+      }
+      // Points toward the surrounding land = into the berth. Null if all water.
+      dock.inwardAngle = hits > 0 ? Math.atan2(sy, sx) : null;
+    }
+  }
+
+  /** Freeze gameplay (no reset). Cancels any in-progress path drawing. */
+  pause() {
+    if (this.state !== GAME_STATES.PLAYING) return;
+    this.pathInput.cancel(this.pathInput.activePointerId);
+    this.state = GAME_STATES.PAUSED;
+  }
+
+  /** Resume from pause WITHOUT resetting score/boats/docks. */
+  resume() {
+    if (this.state !== GAME_STATES.PAUSED) return;
+    this.state = GAME_STATES.PLAYING;
   }
 
   setState(state) {
@@ -118,7 +159,7 @@ export class Game {
       this.gameOverSlide   = 0;
       this._goTryAgainBtn  = null;
       this._goMenuBtn      = null;
-      this._nextVortexAt   = 70;
+      this._nextVortexAt   = 16;
     }
     this.state = state;
   }
@@ -127,9 +168,13 @@ export class Game {
   _bindInput() {
     const el = this.canvas.canvas;
 
-    // Keyboard: D toggles debug overlay
+    // Keyboard: D toggles debug overlay; Esc / P toggles pause.
     window.addEventListener('keydown', (e) => {
       if (e.key === 'd' || e.key === 'D') this.debug.toggle();
+      if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') {
+        if (this.state === GAME_STATES.PLAYING) this.pause();
+        else if (this.state === GAME_STATES.PAUSED) this.resume();
+      }
     });
 
     el.addEventListener('pointerdown', (e) => {
@@ -172,10 +217,22 @@ export class Game {
         }
         break;
       case GAME_STATES.PLAYING: {
+        // Pause button takes priority over path drawing.
+        if (this._inRect(x, y, this.pauseButton)) {
+          this.pause();
+          break;
+        }
         const captured = this.pathInput.onPointerDown(x, y, pointerId);
         if (captured) el.setPointerCapture(pointerId);
         break;
       }
+      case GAME_STATES.PAUSED:
+        if (this._resumeBtn && this._inRect(x, y, this._resumeBtn)) {
+          this.resume();
+        } else if (this._quitBtn && this._inRect(x, y, this._quitBtn)) {
+          this.setState(GAME_STATES.MENU);
+        }
+        break;
       case GAME_STATES.GAMEOVER:
         if (this._goTryAgainBtn && this._inRect(x, y, this._goTryAgainBtn)) {
           this.setState(GAME_STATES.PLAYING);
@@ -186,6 +243,12 @@ export class Game {
       default:
         break;
     }
+  }
+
+  /** Return the larger of two ship types ('small' < 'medium' < 'large'). */
+  _largerType(a, b) {
+    const rank = { small: 1, medium: 2, large: 3 };
+    return (rank[b] ?? 0) > (rank[a] ?? 0) ? b : a;
   }
 
   _inRect(x, y, r) {
@@ -207,12 +270,14 @@ export class Game {
 
       for (const boat of this.spawner.boats) {
         if (!boat.alive) continue;
-        if (boat.state === BOAT_STATES.UNLOADING || boat.state === BOAT_STATES.SUNK) continue;
+        // Skip docking/land checks for boats parked or maneuvering at a berth.
+        if (boat.state === BOAT_STATES.UNLOADING || boat.state === BOAT_STATES.SUNK ||
+            boat.state === BOAT_STATES.DOCKING   || boat.state === BOAT_STATES.WAITING_EXIT) continue;
         if (boat.spinState) continue;  // vortex-stunned — skip docking + land checks
 
         if (boat.state === BOAT_STATES.SAILING) {
           this._checkDocking(boat);
-          if (!boat.alive || boat.state === BOAT_STATES.UNLOADING) continue;
+          if (!boat.alive || boat.state === BOAT_STATES.DOCKING) continue;
         }
 
         // Land collision — 3-point pixel check: center, front, rear of boat.
@@ -235,10 +300,11 @@ export class Game {
         return;
       }
 
-      // Horn for close calls (throttled to once every 2 seconds).
+      // Horn for close calls (throttled). Use the LARGER ship's horn.
       if (this._hornCooldown > 0) this._hornCooldown -= dt;
       if (warnings.length > 0 && this._hornCooldown <= 0) {
-        this.sound.play('horn');
+        const [a, b] = warnings[0];
+        this.sound.playHorn(this._largerType(a.type, b.type));
         this._hornCooldown = 2.0;
       }
 
@@ -251,7 +317,8 @@ export class Game {
         });
       }
 
-      // Update vortices and apply their effect to boats.
+      // Update vortices. A ship caught by an active vortex has its path erased,
+      // spins briefly, then drifts helplessly (no game over).
       for (const v of this.spawner.vortices) v.update(dt);
       this.spawner.vortices = this.spawner.vortices.filter((v) => v.active);
       for (const v of this.spawner.vortices) {
@@ -285,16 +352,15 @@ export class Game {
   }
 
   _checkDocking(boat) {
-    if (boat.cargoColor == null) return;
-
-    // Dock at ANY matching-color, non-occupied dock the boat reaches.
+    // Dock at ANY non-occupied dock whose color the boat still carries (so a
+    // mixed-cargo ship can be routed to either of its colors, in any order).
     for (const dock of this.map.docks) {
-      if (dock.color !== boat.cargoColor) continue;
       if (dock.occupied) continue;
+      if (boat.cargoForColor(dock.color) <= 0) continue;
 
       const dist = Math.hypot(boat.x - dock.center.x, boat.y - dock.center.y);
       if (dist <= DOCK_APPROACH_RADIUS) {
-        dock.startUnloading(boat);
+        dock.beginDocking(boat);   // reserve + sail in (no teleport)
         return;
       }
     }
@@ -313,6 +379,10 @@ export class Game {
         break;
       case GAME_STATES.PLAYING:
         this._renderPlaying(ctx);
+        break;
+      case GAME_STATES.PAUSED:
+        this._renderPlaying(ctx);   // frozen scene beneath the overlay
+        this._renderPauseMenu(ctx);
         break;
       case GAME_STATES.GAMEOVER:
         this._renderGameOver(ctx);
@@ -468,8 +538,59 @@ export class Game {
     for (const boat of this.spawner.boats) boat.render(ctx, this.assets);
     // 6. HUD always on top.
     this.ui.render(ctx);
+    // 6b. Pause button in the HUD.
+    this._renderPauseButton(ctx);
     // 7. Debug overlay (topmost — shows only when enabled).
     this.debug.render(ctx);
+  }
+
+  /** Draw the small "||" pause button in the top-right of the HUD. */
+  _renderPauseButton(ctx) {
+    const b = this.pauseButton;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    this._roundRectPath(ctx, b.x, b.y, b.width, b.height, 6);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    const barW = 5, gap = 6, h = 16;
+    const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+    ctx.fillRect(cx - gap, cy - h / 2, barW, h);
+    ctx.fillRect(cx + gap - barW, cy - h / 2, barW, h);
+    ctx.restore();
+  }
+
+  /** Dim overlay + Resume / Quit buttons shown while PAUSED. */
+  _renderPauseMenu(ctx) {
+    const CW = CANVAS_WIDTH, CH = CANVAS_HEIGHT;
+    ctx.save();
+    ctx.fillStyle = 'rgba(4,18,28,0.72)';
+    ctx.fillRect(0, 0, CW, CH);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 56px system-ui, sans-serif';
+    ctx.fillText('PAUSED', CW / 2, CH / 2 - 120);
+
+    const bw = 280, bh = 70, gap = 26;
+    const x = CW / 2 - bw / 2;
+    const yResume = CH / 2 - 20;
+    const yQuit   = yResume + bh + gap;
+    this._resumeBtn = { x, y: yResume, width: bw, height: bh };
+    this._quitBtn   = { x, y: yQuit,   width: bw, height: bh };
+
+    const drawBtn = (b, label, fill) => {
+      ctx.fillStyle = fill;
+      this._roundRectPath(ctx, b.x, b.y, b.width, b.height, 12);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 26px system-ui, sans-serif';
+      ctx.fillText(label, b.x + b.width / 2, b.y + b.height / 2);
+    };
+    drawBtn(this._resumeBtn, 'Resume',           '#2f9e44');
+    drawBtn(this._quitBtn,   'Quit to Main Menu', 'rgba(255,255,255,0.18)');
+
+    ctx.restore();
   }
 
   _renderGameOver(ctx) {
@@ -625,10 +746,10 @@ export class Game {
   // --- Vortex helpers ---
 
   _checkVortexSpawn() {
-    // Vortices only appear at score 70+ (difficulty tier 5), every 25 cargo.
+    // Vortices appear once score > 15, then roughly every 20 cargo after that.
     if (this.score.current < this._nextVortexAt) return;
     this._spawnVortex();
-    this._nextVortexAt = this.score.current + 25;
+    this._nextVortexAt = this.score.current + 20;
   }
 
   _spawnVortex() {
@@ -668,10 +789,10 @@ export class Game {
   _firstLandPoint(boat) {
     const { x, y, angle, radius } = boat;
 
-    // Skip land collision near ANY dock matching the boat's cargo color, so
-    // boats can reach color-matching docks that sit on/against the island.
+    // Skip land collision near ANY dock whose color the boat still carries, so
+    // it can reach matching docks that sit on/against the island.
     for (const dock of this.map.docks) {
-      if (dock.color !== boat.cargoColor) continue;
+      if (boat.cargoForColor(dock.color) <= 0) continue;
       const dist = Math.hypot(x - dock.center.x, y - dock.center.y);
       if (dist < 90) return null;
     }

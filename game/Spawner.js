@@ -31,30 +31,27 @@ const PURPLE = '#8B5CF6';
  * Phase 3 (20+):   All three types.          Fast, chaotic.   2–4 s (ramps)
  */
 const DIFFICULTY = [
-  // ── Phase 1: early game — small only ───────────────────────────────────
+  // ── Phase 1 (0–7): small only, slow & relaxed ──────────────────────────
   { minScore:  0, intervalMin: 6.0, intervalMax: 8.0,
     types: ['small'],
     maxDocksPerColor: 99 },
 
-  // ── Phase 2: mid game — small + medium ─────────────────────────────────
-  { minScore:  8, intervalMin: 5.0, intervalMax: 6.0,
-    types: ['small', 'medium'],
-    maxDocksPerColor: 99 },
-  { minScore: 14, intervalMin: 4.0, intervalMax: 5.5,
-    types: ['small', 'medium', 'medium'],
+  // ── Phase 2 (8–14): MEDIUM unlocked with HIGH probability ──────────────
+  { minScore:  8, intervalMin: 5.0, intervalMax: 6.5,
+    types: ['small', 'medium', 'medium', 'medium'],   // ~75% medium
     maxDocksPerColor: 99 },
 
-  // ── Phase 3: late game — all types ─────────────────────────────────────
-  { minScore: 20, intervalMin: 3.0, intervalMax: 4.0,
-    types: ['small', 'medium', 'large'],
+  // ── Phase 3 (15+): LARGE ships spawn regularly ─────────────────────────
+  { minScore: 15, intervalMin: 4.0, intervalMax: 5.5,
+    types: ['small', 'medium', 'medium', 'large', 'large'],  // large regular
     maxDocksPerColor: 99 },
-  { minScore: 35, intervalMin: 2.5, intervalMax: 3.5,
-    types: ['small', 'medium', 'medium', 'large'],
+  { minScore: 30, intervalMin: 3.0, intervalMax: 4.5,
+    types: ['small', 'medium', 'large', 'large'],
     maxDocksPerColor: 99 },
-  { minScore: 55, intervalMin: 2.0, intervalMax: 3.0,
+  { minScore: 50, intervalMin: 2.5, intervalMax: 3.5,
     types: ['medium', 'medium', 'large', 'large'],
     maxDocksPerColor: 99 },
-  { minScore: 80, intervalMin: 2.0, intervalMax: 2.5,
+  { minScore: 75, intervalMin: 2.0, intervalMax: 3.0,
     types: ['medium', 'large', 'large'],
     maxDocksPerColor: 99 },
 ];
@@ -207,18 +204,12 @@ export class Spawner {
     const y    = cfg.varyAxis === 'y' ? varyCoord : cfg.fixedVal;
 
     const boat          = new Boat({ type, cargo: true, cargoColor, x, y });
+    // Orthogonal entry — straight in, perpendicular to the edge (no variation).
     boat.angle          = cfg.headingAngle;
-    // Add random angle variation ±35 degrees so boats enter at varied headings
-    const variation = (Math.random() - 0.5) * (70 * Math.PI / 180); // ±35°
-    boat.angle = cfg.headingAngle + variation;
     // No pre-set path — boats drift straight until the player draws one.
     boat.path           = [];
     boat.pathIndex      = 0;
-    boat.sprite         = this.game.assets.get(
-      boat.cargoRemaining > 0
-        ? `${boat.type}_cargo`
-        : `${boat.type}_empty`
-    );
+    boat.sprite         = this.game.assets.get(`${boat.type}_empty`);
     // No pre-assignment — boat docks at any matching-color dock it reaches.
     boat.targetDockId   = null;
     // hw/hh/radius are set in the Boat constructor from measured sprite size.
@@ -228,12 +219,11 @@ export class Spawner {
     if (type === 'large') {
       this.largeBoatCount++;
       if (this.largeBoatCount % 3 === 0) {
-        boat.mixedCargo        = true;
-        boat.cargoColor        = '#FFD700';
-        boat.primaryCargoCount = 2;
-        boat.secondaryColor    = '#8B5CF6';
-        boat.cargoCount        = 4;
-        boat.cargoRemaining    = 4;
+        // Mixed cargo: 2 yellow + 2 purple, dockable at either color in any order.
+        boat.mixedCargo     = true;
+        boat.cargo          = { '#FFD700': 2, '#8B5CF6': 2 };
+        boat.cargoCount     = 4;
+        boat.cargoRemaining = 4;
       }
     }
 
@@ -241,33 +231,48 @@ export class Spawner {
   }
 
   _renderArrow(ctx, pending, now) {
-    const { edge, varyCoord, cargoColor, timeUntilSpawn } = pending;
+    const { edge, varyCoord } = pending;
     const cfg = ARROW_RENDER[edge];
     if (!cfg) return;
-    const { x, y } = cfg.getPos(varyCoord);
+    const base = cfg.getPos(varyCoord);
 
-    const pulse   = 0.5 + 0.5 * Math.abs(Math.sin((now / 1000) * Math.PI * 4)); // 2 Hz
-    const urgency = 1 - timeUntilSpawn / WARNING_SECS;
-    const alpha   = Math.max(0.4, pulse * (0.5 + 0.5 * urgency));
+    // Point OUTWARD toward the edge (where the ship is coming from) — the
+    // opposite of the ship's inward heading.
+    const outward = cfg.angle + Math.PI;
+    const ox = Math.cos(outward), oy = Math.sin(outward);
+
+    // Slide back and forth along the pointing axis (no opacity pulsing).
+    const slide = Math.sin((now / 1000) * Math.PI * 2 * 1.3) * 8; // ±8px @ 1.3 Hz
+    const x = base.x + ox * slide;
+    const y = base.y + oy * slide;
+
+    // NOT tinted — the incoming cargo color stays a mystery.
+    const img = this.game.assets?.get('warning_arrow');
 
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(cfg.angle);
-    ctx.globalAlpha = alpha;
-
-    ctx.beginPath();
-    ctx.moveTo(18, 0);
-    ctx.lineTo(-8, -11);
-    ctx.lineTo(-2,  0);
-    ctx.lineTo(-8,  11);
-    ctx.closePath();
-
-    ctx.fillStyle   = cargoColor;
-    ctx.fill();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth   = 2;
-    ctx.stroke();
-
+    ctx.rotate(outward);
+    if (img) {
+      const S = 46;
+      ctx.drawImage(img, -S / 2, -S / 2, S, S);
+    } else {
+      // Neutral white fallback arrow (used until warning-arrow.png is added).
+      ctx.beginPath();
+      ctx.moveTo( 22,   0);
+      ctx.lineTo(  4, -15);
+      ctx.lineTo(  4,  -6);
+      ctx.lineTo(-18,  -6);
+      ctx.lineTo(-18,   6);
+      ctx.lineTo(  4,   6);
+      ctx.lineTo(  4,  15);
+      ctx.closePath();
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.lineJoin    = 'round';
+      ctx.strokeStyle = 'rgba(20,20,20,0.85)';
+      ctx.lineWidth   = 3;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }

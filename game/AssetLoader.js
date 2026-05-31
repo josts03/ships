@@ -11,27 +11,25 @@
  */
 
 // --- Asset URLs (Vite resolves these to real, bundled URLs) ---
-import smallCargo from '../assets/boats/small_cargo.png';
+// Ships use the EMPTY base hulls only; cargo is drawn dynamically as an
+// overlay, so the pre-drawn *_cargo.png sprites are intentionally not loaded.
 import smallEmpty from '../assets/boats/small_empty.png';
-import mediumCargo from '../assets/boats/medium_cargo.png';
 import mediumEmpty from '../assets/boats/medium_empty.png';
-import largeCargo from '../assets/boats/large_cargo.png';
 import largeEmpty from '../assets/boats/large_empty.png';
 import backgroundUrl from '../assets/map/background.png';
 import collisionMapUrl from '../assets/map/collision_map_v2.png';
 import vortexUrl from '../assets/vortex/vortex.png';
+import warningArrowUrl from '../assets/warning-arrow.png';
 
 /** key -> bundled URL. The keys are what the rest of the game looks up. */
 export const ASSET_MANIFEST = {
-  small_cargo:   smallCargo,
   small_empty:   smallEmpty,
-  medium_cargo:  mediumCargo,
   medium_empty:  mediumEmpty,
-  large_cargo:   largeCargo,
   large_empty:   largeEmpty,
   background:    backgroundUrl,
   collision_map: collisionMapUrl,
   vortex:        vortexUrl,
+  warning_arrow: warningArrowUrl,
 };
 
 export class AssetLoader {

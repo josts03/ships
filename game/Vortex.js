@@ -76,16 +76,22 @@ export class Vortex {
   affectBoat(boat) {
     if (!this.active || !boat.alive) return;
     if (boat.spinState) return;
-    if (boat.state === 'UNLOADING' || boat.state === 'SUNK') return;
+    // Don't catch boats that are parked / maneuvering at a berth.
+    if (boat.state === 'UNLOADING' || boat.state === 'SUNK' ||
+        boat.state === 'DOCKING'   || boat.state === 'WAITING_EXIT') return;
 
-    if (Math.hypot(boat.x - this.x, boat.y - this.y) > VORTEX_RADIUS) return;
+    // Caught when the ship's hitbox intersects the vortex radius.
+    const reach = VORTEX_RADIUS + Math.min(boat.hw ?? 0, boat.hh ?? 0);
+    if (Math.hypot(boat.x - this.x, boat.y - this.y) > reach) return;
 
+    // Erase the drawn path, spin briefly, then keep drifting helplessly in the
+    // current heading. The player must draw a new path to save it.
     boat.clearPath();
     boat.spinState = {
       elapsed:   0,
       duration:  SPIN_DURATION,
       spinRate:  SPIN_RATE,
-      exitAngle: Math.random() * Math.PI * 2,
+      exitAngle: boat.angle,
     };
   }
 

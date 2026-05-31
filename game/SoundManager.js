@@ -11,11 +11,34 @@
  *   crash  – boat collision          (thud + noise burst)
  *   ambient/music – no-op stubs until mp3 files exist
  */
+import smallHornUrl  from '../assets/sounds/small-horn.mp3';
+import mediumHornUrl from '../assets/sounds/medium-horn.mp3';
+import largeHornUrl  from '../assets/sounds/large-horn.mp3';
+
+// Per-size horn config. Large is the deep blast — loudest / highest priority.
+const HORN_CONFIG = {
+  small:  { url: smallHornUrl,  volume: 0.55, priority: 1 },
+  medium: { url: mediumHornUrl, volume: 0.75, priority: 2 },
+  large:  { url: largeHornUrl,  volume: 1.00, priority: 3 },
+};
+
 export class SoundManager {
   constructor() {
     this._ctx      = null;   // AudioContext, created lazily after first user gesture
     this.muted     = false;
     this._loopStarted = false;
+
+    // Pre-create one HTMLAudio element per horn size so playback is instant.
+    this._horns = {};
+    for (const [size, cfg] of Object.entries(HORN_CONFIG)) {
+      const a = new Audio(cfg.url);
+      a.volume   = cfg.volume;
+      a.preload  = 'auto';
+      this._horns[size] = a;
+    }
+    // Tracks the size currently sounding so a bigger blast can override a
+    // smaller one but not vice-versa (large takes channel priority).
+    this._activeHornPriority = 0;
   }
 
   /** Called once on game start — resume context and optionally start loops. */
@@ -37,9 +60,32 @@ export class SoundManager {
     if (this.muted) return;
     switch (key) {
       case 'plink': this._plink(); break;
-      case 'horn':  this._horn();  break;
+      case 'horn':  this.playHorn('medium'); break;  // back-compat default
       case 'crash': this._crash(); break;
     }
+  }
+
+  /**
+   * Play the horn .mp3 for a given ship size ('small'|'medium'|'large').
+   * A larger (higher-priority) horn can interrupt a smaller one that is still
+   * playing, but a smaller horn won't cut off a larger blast in progress.
+   */
+  playHorn(size = 'medium') {
+    if (this.muted) return;
+    const cfg = HORN_CONFIG[size];
+    const audio = this._horns[size];
+    if (!cfg || !audio) return;
+
+    // Channel priority: don't let a small honk stomp a deep blast.
+    if (cfg.priority < this._activeHornPriority && !audio.paused) return;
+    this._activeHornPriority = cfg.priority;
+
+    try {
+      audio.currentTime = 0;
+      const p = audio.play();
+      if (p) p.catch(() => {});
+      audio.onended = () => { this._activeHornPriority = 0; };
+    } catch { /* autoplay blocked / element busy — ignore */ }
   }
 
   stop(_key) {}

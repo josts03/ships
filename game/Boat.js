@@ -11,9 +11,10 @@ import { BOAT_SPEEDS, CARGO_COUNTS } from './Game.js';
 
 export const BOAT_STATES = {
   SAILING:      'SAILING',
-  DOCKING:      'DOCKING',
+  DOCKING:      'DOCKING',       // sailing the final stretch into the berth
   UNLOADING:    'UNLOADING',
   WAITING_EXIT: 'WAITING_EXIT',
+  EXIT_TURNING: 'EXIT_TURNING',  // rotating 180° in place before departing
   EXITING:      'EXITING',
   SUNK:         'SUNK',
 };
@@ -38,7 +39,8 @@ const CARGO_OFFSETS = {
   large:  [[-13, 0], [-4, 0], [4, 0], [13, 0]],
 };
 
-const ROT_SPEED  = 10;   // exponential lerp rate for heading
+// Per-size rotational lerp rate (rad/s). Large ships turn slower than small.
+const TURN_SPEED = { small: 14, medium: 9, large: 5 };
 const EXIT_MARGIN = 80;  // px off-canvas before boat is considered exited
 
 export class Boat {
@@ -66,11 +68,11 @@ export class Boat {
     // (land only bounces — never causes game over).
     this.radius = Math.round(DRAW_DIMS[type].h * 0.42);
 
-    // Mixed cargo (every 3rd large boat): unloads `primaryCargoCount` blocks of
-    // `cargoColor` at one dock, then switches to `secondaryColor` for a second.
-    this.mixedCargo        = false;
-    this.secondaryColor    = null;
-    this.primaryCargoCount = 0;
+    // Mixed cargo (every 3rd large boat): `cargo` is a per-color block count,
+    // e.g. { '#FFD700': 2, '#8B5CF6': 2 }. Such a ship may dock at ANY port
+    // matching a color it still carries, in whatever order the player chooses.
+    this.mixedCargo = false;
+    this.cargo      = null;
 
     this.path      = [];
     this.pathIndex = 0;
@@ -82,12 +84,17 @@ export class Boat {
 
     this.state = BOAT_STATES.SAILING;
     this.alive = true;
+
+    // Docking approach state (set by Dock.beginDocking; no teleport).
+    this.dockTarget = null;          // Dock the boat is sailing into
+    this.dockCenter = null;          // { x, y } exact berth center
+    this.dockAngle  = null;          // bow heading to align with on arrival
+    this.exitAngle  = null;          // ocean-facing heading after unloading
   }
 
   get spriteKey() {
-    return this.cargoRemaining > 0
-      ? `${this.type}_cargo`
-      : `${this.type}_empty`;
+    // All ships use the empty base hull; cargo is an overlay, not a sprite.
+    return `${this.type}_empty`;
   }
 
   // ---------- Path management ----------
@@ -102,14 +109,45 @@ export class Boat {
     this.pathIndex = 0;
   }
 
+  // ---------- Cargo (supports mixed-color loads) ----------
+
+  /** Number of cargo blocks of `color` still aboard. */
+  cargoForColor(color) {
+    if (this.mixedCargo && this.cargo) return this.cargo[color] ?? 0;
+    return (color === this.cargoColor) ? this.cargoRemaining : 0;
+  }
+
+  /** Remove one cargo block of `color` (also decrements the running total). */
+  removeCargoOfColor(color) {
+    if (this.mixedCargo && this.cargo && this.cargo[color] > 0) {
+      this.cargo[color]--;
+    }
+    this.cargoRemaining = Math.max(0, this.cargoRemaining - 1);
+  }
+
   // ---------- Update ----------
 
   update(dt, canvasWidth, canvasHeight) {
-    // Finished unloading: hold position at the dock until the player draws an
-    // exit path. The moment a path is assigned, the boat departs.
+    // DOCKING: physically sail the rest of the way into the berth (no teleport),
+    // turning the bow to face the dock's inward angle, then begin unloading.
+    if (this.state === BOAT_STATES.DOCKING) {
+      this._updateDocking(dt);
+      return;
+    }
+
+    // Finished unloading: IMMEDIATELY rotate in place to face the ocean (a 180°
+    // turn from the inward dock pose) and wait there. When the player draws an
+    // exit path, depart along it.
     if (this.state === BOAT_STATES.WAITING_EXIT) {
+      if (this.exitAngle != null) {
+        this.angle = this._lerpAngle(this.angle, this.exitAngle, dt);
+      }
       if (this.path.length > 0) {
-        this.state = BOAT_STATES.EXITING;
+        // Still carrying cargo (mixed ship headed to another dock) → SAILING so
+        // it can dock again; fully empty → EXITING to leave the map.
+        this.state = (this.cargoRemaining > 0)
+          ? BOAT_STATES.SAILING
+          : BOAT_STATES.EXITING;
       }
       return;
     }
@@ -139,7 +177,7 @@ export class Boat {
         this.angle += Math.PI;                              // reverse direction
         this.x = Math.max(10, Math.min(cw - 10, this.x));
         this.y = Math.max(10, Math.min(ch - 10, this.y));
-        this.clearPath();
+        this.clearPath();                                   // bounce silently
         return;
       }
       this.alive = false;
@@ -175,17 +213,60 @@ export class Boat {
     let diff = target - current;
     while (diff >  Math.PI) diff -= 2 * Math.PI;
     while (diff < -Math.PI) diff += 2 * Math.PI;
-    return current + diff * (1 - Math.exp(-ROT_SPEED * dt));
+    const rate = TURN_SPEED[this.type] ?? 10;
+    return current + diff * (1 - Math.exp(-rate * dt));
   }
+
+  /** Shortest signed angular difference target − current, in (−π, π]. */
+  _angleDelta(current, target) {
+    let d = target - current;
+    while (d >  Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+  }
+
+  /**
+   * DOCKING: sail straight to the berth center (no teleport) while turning the
+   * bow toward the dock's inward angle. Once centered AND aligned, begin
+   * unloading. The dock berth was already reserved in Dock.beginDocking().
+   */
+  _updateDocking(dt) {
+    const c = this.dockCenter;
+    if (!c) { this.state = BOAT_STATES.UNLOADING; return; }  // safety fallback
+
+    const targetAngle = (this.dockAngle != null) ? this.dockAngle : this.angle;
+    const dx = c.x - this.x, dy = c.y - this.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist > 2) {
+      // Forceful pull toward the berth center (brisk, never overshoots).
+      this.angle = this._lerpAngle(this.angle, targetAngle, dt);
+      const pull = Math.max(this.speed, 180);
+      const step = Math.min(pull * dt, dist);
+      this.x += (dx / dist) * step;
+      this.y += (dy / dist) * step;
+    } else {
+      // At center — finish aligning the bow, then dock.
+      this.x = c.x;
+      this.y = c.y;
+      this.angle = this._lerpAngle(this.angle, targetAngle, dt);
+      if (Math.abs(this._angleDelta(this.angle, targetAngle)) < 0.05) {
+        this.angle = targetAngle;          // perfect final alignment
+        this.state = BOAT_STATES.UNLOADING;
+        if (this.dockTarget) this.dockTarget.unloadTimer = 0;
+      }
+    }
+  }
+
 
   // ---------- Rendering ----------
 
   render(ctx, assets) {
     if (!this.alive) return;
 
-    const spriteKey = this.cargoRemaining > 0
-      ? `${this.type}_cargo`
-      : `${this.type}_empty`;
+    // Always render the EMPTY base hull — cargo is drawn dynamically on top as
+    // colored blocks, so no baked-in cargo ever shows through.
+    const spriteKey = `${this.type}_empty`;
     const img = assets?.get(spriteKey) ?? null;
 
     const { w, h } = DRAW_DIMS[this.type];
@@ -261,12 +342,20 @@ export class Boat {
       const bw      = BLOCK[this.type];
       const bh      = BLOCK_H[this.type];
 
-      for (let i = 0; i < this.cargoRemaining && i < offsets.length; i++) {
+      // Color of each remaining block. Mixed loads list each color's blocks.
+      let colors;
+      if (this.mixedCargo && this.cargo) {
+        colors = [];
+        for (const color of Object.keys(this.cargo)) {
+          for (let k = 0; k < this.cargo[color]; k++) colors.push(color);
+        }
+      } else {
+        colors = new Array(this.cargoRemaining).fill(this.cargoColor);
+      }
+
+      for (let i = 0; i < colors.length && i < offsets.length; i++) {
         const [ox, oy] = offsets[i];
-        const blockColor = (this.mixedCargo && i >= this.primaryCargoCount)
-          ? this.secondaryColor
-          : this.cargoColor;
-        ctx.fillStyle   = blockColor;
+        ctx.fillStyle   = colors[i];
         ctx.strokeStyle = 'rgba(0,0,0,0.45)';
         ctx.lineWidth   = 1.5;
         ctx.fillRect(ox - bw / 2, oy - bh / 2, bw, bh);

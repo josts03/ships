@@ -53,10 +53,11 @@ export class Collision {
           return { collided: [a, b], warnings: [] };
         }
 
-        // Warning zone: within 115% of the collision distance (very close).
+        // Warning zone: each hull's bounding box expanded by 10px, so the horn
+        // + halo trigger earlier (a reaction window before the real hitbox hits).
         const warningOverlap = Collision.ellipsesOverlap(
-          a.x, a.y, a.hw * 1.15, a.hh * 1.15, a.angle,
-          b.x, b.y, b.hw * 1.15, b.hh * 1.15, b.angle
+          a.x, a.y, a.hw + 10, a.hh + 10, a.angle,
+          b.x, b.y, b.hw + 10, b.hh + 10, b.angle
         );
         if (warningOverlap) {
           warnings.push([a, b]);

@@ -13,6 +13,10 @@ const DOWNSAMPLE_DIST   = 8;  // px between spline control points
 const SAMPLE_STEP       = 5;  // px between sampled waypoints on the final spline
 const TAP_THRESHOLD     = 10; // px total drag to count as a tap (erase) vs draw
 
+// Path-vs-land truncation.
+const LAND_SAMPLE_STEP  = 4;  // px between land-collision samples along a segment
+const DOCK_OPENING      = 48; // px radius around a dock center treated as passable
+
 export class PathDrawing {
   constructor(game) {
     this.game = game;
@@ -20,6 +24,7 @@ export class PathDrawing {
     this.selectedBoat     = null;
     this.activePointerId  = null;
     this.rawPoints        = [];   // points recorded during this drag
+    this._followAssigned  = false; // true once the boat is following live
   }
 
   // ---------- Pointer event handlers (called by Game.js) ----------
@@ -30,7 +35,9 @@ export class PathDrawing {
 
     this.selectedBoat    = boat;
     this.activePointerId = pointerId;
-    this.rawPoints       = [{ x, y }];
+    // Start the path exactly at the boat so it follows from its own position.
+    this.rawPoints       = [{ x: boat.x, y: boat.y }];
+    this._followAssigned = false;
     boat.highlighted     = true;
     return true;  // tells Game to capture the pointer
   }
@@ -39,7 +46,17 @@ export class PathDrawing {
     if (this.activePointerId !== pointerId || !this.selectedBoat) return;
     const last = this.rawPoints[this.rawPoints.length - 1];
     if (Math.hypot(x - last.x, y - last.y) >= RECORD_DIST) {
-      this.rawPoints.push({ x, y });
+      // Real-time truncation: never register a point/segment inside a landmass.
+      if (this._segmentClear(last, { x, y })) {
+        this.rawPoints.push({ x, y });
+      } else {
+        // Drag crossed a barrier — clamp the path to the water edge. (Once the
+        // finger returns to open water, drawing resumes from this edge point.)
+        const edge = this._clampToEdge(last, { x, y });
+        if (Math.hypot(edge.x - last.x, edge.y - last.y) >= RECORD_DIST) {
+          this.rawPoints.push(edge);
+        }
+      }
     }
 
     // Dock snap assist: if the cursor is near a dock that matches this boat's
@@ -53,7 +70,7 @@ export class PathDrawing {
     const boat = this.selectedBoat;
     if (boat.cargoRemaining > 0 && boat.state === 'SAILING') {
       for (const dock of this.game.map.docks) {
-        if (dock.color !== boat.cargoColor) continue;
+        if (boat.cargoForColor(dock.color) <= 0) continue;
         const dist = Math.hypot(x - dock.center.x, y - dock.center.y);
         if (dist < SNAP_RADIUS) {
           if (this.rawPoints.length > 0) {
@@ -66,6 +83,15 @@ export class PathDrawing {
           break;
         }
       }
+    }
+
+    // Real-time following: as soon as a couple of points exist, hand the LIVE
+    // raw-point array to the boat so it starts orienting and moving immediately,
+    // without waiting for pointerup. The array keeps growing as we draw.
+    if (!this._followAssigned && this.rawPoints.length >= 2) {
+      boat.path       = this.rawPoints;
+      boat.pathIndex  = 0;
+      this._followAssigned = true;
     }
   }
 
@@ -87,17 +113,18 @@ export class PathDrawing {
 
     const pathLength = this._polylineLength(this.rawPoints);
     if (pathLength < TAP_THRESHOLD) {
-      // Tap: erase path so boat continues straight.
+      // Tap: erase path so the boat continues straight / stops following.
       boat.clearPath();
     } else {
-      const spline = this.buildSpline(this.rawPoints);
-      if (spline.length >= 2) {
-        // For empty boats being routed out, snap the path to the nearest screen
-        // edge and extend it past the edge so the boat fully exits.
-        if (boat.state === 'WAITING_EXIT' || boat.state === 'EXITING') {
-          this._applyEdgeSnap(spline);
-        }
-        boat.assignPath(spline);
+      // The boat has been following the live raw path during the drag. Ensure
+      // it is assigned (fallback) and finish empty boats off with an edge-snap
+      // so they fully exit the screen.
+      if (!this._followAssigned) {
+        boat.path = this.rawPoints;
+        boat.pathIndex = 0;
+      }
+      if (boat.state === 'EXITING' || boat.state === 'WAITING_EXIT') {
+        this._applyEdgeSnap(boat.path);
       }
     }
 
@@ -114,7 +141,9 @@ export class PathDrawing {
     }
     this.selectedBoat    = null;
     this.activePointerId = null;
+    // New array — the boat keeps following the old one (its committed path).
     this.rawPoints       = [];
+    this._followAssigned = false;
   }
 
   /**
@@ -136,6 +165,58 @@ export class PathDrawing {
     else if (m === dr)   path.push({ x: W, y: last.y }, { x: W + BEYOND, y: last.y });
     else if (m === dtop) path.push({ x: last.x, y: 0 }, { x: last.x, y: -BEYOND });
     else                 path.push({ x: last.x, y: H }, { x: last.x, y: H + BEYOND });
+  }
+
+  // ---------- Land / barrier truncation ----------
+
+  /**
+   * True if (x, y) lies inside an impassable static body (island / concrete
+   * barrier). Dock berths are legitimate openings, so points within
+   * DOCK_OPENING of a dock center are always passable.
+   */
+  _blocked(x, y) {
+    const map = this.game.map;
+    if (!map || !map.isLand(x, y)) return false;
+    for (const dock of map.docks) {
+      const c = dock.center;
+      if (Math.hypot(x - c.x, y - c.y) < DOCK_OPENING) return false;
+    }
+    return true;
+  }
+
+  /** True if the straight segment a→b is entirely clear of barriers. */
+  _segmentClear(a, b) {
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const n = Math.max(1, Math.ceil(dist / LAND_SAMPLE_STEP));
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      if (this._blocked(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)) return false;
+    }
+    return true;
+  }
+
+  /** Furthest point along a→b that is still clear of barriers (water edge). */
+  _clampToEdge(a, b) {
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const n = Math.max(1, Math.ceil(dist / LAND_SAMPLE_STEP));
+    let edge = { x: a.x, y: a.y };
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t;
+      if (this._blocked(px, py)) break;
+      edge = { x: px, y: py };
+    }
+    return edge;
+  }
+
+  /** Cut a finished path at the first point that lands inside a barrier. */
+  _truncateAtLand(path) {
+    for (let i = 0; i < path.length; i++) {
+      if (this._blocked(path[i].x, path[i].y)) {
+        return path.slice(0, i);
+      }
+    }
+    return path;
   }
 
   // ---------- Catmull-Rom spline ----------
