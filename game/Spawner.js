@@ -33,28 +33,39 @@ const PURPLE = '#8B5CF6';
 const DIFFICULTY = [
   // ── Phase 1 (0–7): small only, slow & relaxed ──────────────────────────
   { minScore:  0, intervalMin: 6.0, intervalMax: 8.0,
-    types: ['small'],
+    weights: { small: 1.00, medium: 0.00, large: 0.00 },
     maxDocksPerColor: 99 },
 
   // ── Phase 2 (8–14): MEDIUM unlocked with HIGH probability ──────────────
   { minScore:  8, intervalMin: 5.0, intervalMax: 6.5,
-    types: ['small', 'medium', 'medium', 'medium'],   // ~75% medium
+    weights: { small: 0.27, medium: 0.73, large: 0.00 },
     maxDocksPerColor: 99 },
 
-  // ── Phase 3 (15+): LARGE ships spawn regularly ─────────────────────────
+  // ── Phase 3 (15+): LARGE ships spawn regularly. Type weights stay fixed
+  //    from here on; only the spawn interval keeps ramping with score. ─────
   { minScore: 15, intervalMin: 4.0, intervalMax: 5.5,
-    types: ['small', 'medium', 'medium', 'large', 'large'],  // large regular
+    weights: { small: 0.10, medium: 0.40, large: 0.50 },
     maxDocksPerColor: 99 },
   { minScore: 30, intervalMin: 3.0, intervalMax: 4.5,
-    types: ['small', 'medium', 'large', 'large'],
+    weights: { small: 0.10, medium: 0.40, large: 0.50 },
     maxDocksPerColor: 99 },
   { minScore: 50, intervalMin: 2.5, intervalMax: 3.5,
-    types: ['medium', 'medium', 'large', 'large'],
+    weights: { small: 0.10, medium: 0.40, large: 0.50 },
     maxDocksPerColor: 99 },
   { minScore: 75, intervalMin: 2.0, intervalMax: 3.0,
-    types: ['medium', 'large', 'large'],
+    weights: { small: 0.10, medium: 0.40, large: 0.50 },
     maxDocksPerColor: 99 },
 ];
+
+/** Pick a ship type from a tier's probability weights. */
+function pickType(weights) {
+  let r = Math.random();
+  for (const [type, w] of Object.entries(weights)) {
+    if (r < w) return type;
+    r -= w;
+  }
+  return 'small';
+}
 
 /**
  * Edge spawn config — left/right only.
@@ -168,7 +179,7 @@ export class Spawner {
     const edges     = Object.keys(EDGE_CONFIG);
     const edge      = edges[Math.floor(Math.random() * edges.length)];
     const varyCoord = this._pickCoord(edge);
-    const type      = diff.types[Math.floor(Math.random() * diff.types.length)];
+    const type      = pickType(diff.weights);
 
     this.pendingSpawns.push({
       timeUntilSpawn: WARNING_SECS,

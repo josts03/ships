@@ -8,7 +8,7 @@
  */
 
 const MIN_SPLINE_POINTS = 4;  // minimum downsample points for a smooth curve
-const RECORD_DIST       = 2;  // px between recorded raw points
+const RECORD_DIST       = 5;  // px between recorded raw points (pointermove kept light)
 const DOWNSAMPLE_DIST   = 8;  // px between spline control points
 const SAMPLE_STEP       = 5;  // px between sampled waypoints on the final spline
 const TAP_THRESHOLD     = 10; // px total drag to count as a tap (erase) vs draw
@@ -64,7 +64,7 @@ export class PathDrawing {
     // highlight that dock. Clear all highlights first so only one shows.
     // Only snap loaded boats that are still sailing — never empty boats that
     // are waiting to exit or already exiting.
-    const SNAP_RADIUS = 60;
+    const SNAP_RADIUS = 30;   // must draw into the dock entrance — minimal magnet
     for (const dock of this.game.map.docks) dock.snapHighlight = false;
 
     const boat = this.selectedBoat;
@@ -340,7 +340,7 @@ export class PathDrawing {
     ctx.globalAlpha = 0.7;
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth   = 2.5;
-    ctx.setLineDash([8, 4]);
+    ctx.setLineDash([]);          // solid line
 
     ctx.beginPath();
     ctx.moveTo(boat.x, boat.y);
@@ -349,7 +349,6 @@ export class PathDrawing {
     }
     ctx.stroke();
 
-    ctx.setLineDash([]);
     ctx.restore();
   }
 
@@ -358,7 +357,7 @@ export class PathDrawing {
     ctx.globalAlpha = 0.45;
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth   = 2;
-    ctx.setLineDash([6, 4]);
+    ctx.setLineDash([]);          // solid line
 
     ctx.beginPath();
     ctx.moveTo(this.rawPoints[0].x, this.rawPoints[0].y);
@@ -367,7 +366,6 @@ export class PathDrawing {
     }
     ctx.stroke();
 
-    ctx.setLineDash([]);
     ctx.restore();
   }
 }

@@ -18,8 +18,7 @@ const CH = 768;
 const DRAW_SIZE    = 80;             // px — visual size of vortex sprite
 const MOVE_SPEED   = 25;             // px/s drift speed
 const ROT_RATE     = Math.PI;        // rad/s — full 360° every 2 s
-const SPIN_DURATION = 1.5;           // seconds a caught boat spins
-const SPIN_RATE    = 18;             // rad/s fast spin on boat sprite
+const SPIN_DURATION = 0.7;           // seconds for the single 360° spin
 
 export const VORTEX_RADIUS = 30;     // px — catch (interaction) radius
 
@@ -76,6 +75,7 @@ export class Vortex {
   affectBoat(boat) {
     if (!this.active || !boat.alive) return;
     if (boat.spinState) return;
+    if ((boat.vortexCd ?? 0) > 0) return;   // still immune from a recent spin
     // Don't catch boats that are parked / maneuvering at a berth.
     if (boat.state === 'UNLOADING' || boat.state === 'SUNK' ||
         boat.state === 'DOCKING'   || boat.state === 'WAITING_EXIT') return;
@@ -88,10 +88,9 @@ export class Vortex {
     // current heading. The player must draw a new path to save it.
     boat.clearPath();
     boat.spinState = {
-      elapsed:   0,
-      duration:  SPIN_DURATION,
-      spinRate:  SPIN_RATE,
-      exitAngle: boat.angle,
+      elapsed:    0,
+      duration:   SPIN_DURATION,
+      startAngle: boat.angle,   // one full turn returns to this heading
     };
   }
 
@@ -103,14 +102,16 @@ export class Vortex {
     const img = assets.get('vortex');
     if (!img) return;
 
-    const alpha = Math.min(1, this.remaining);
-    if (alpha <= 0) return;
+    // Scale up 0→1 over the first second, down 1→0 over the last second.
+    const scale = Math.min(1, this.elapsed, this.remaining);
+    if (scale <= 0) return;
 
+    const size = DRAW_SIZE * scale;
     ctx.save();
-    ctx.globalAlpha = alpha * 0.85;
+    ctx.globalAlpha = 0.85;
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
-    ctx.drawImage(img, -DRAW_SIZE / 2, -DRAW_SIZE / 2, DRAW_SIZE, DRAW_SIZE);
+    ctx.drawImage(img, -size / 2, -size / 2, size, size);
     ctx.restore();
   }
 }

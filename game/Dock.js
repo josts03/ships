@@ -13,10 +13,9 @@
 const UNLOAD_INTERVAL = 1.75;
 const FLASH_DURATION  = 0.55;  // seconds for wrong-color red flash
 
-// Catch radius — a matching-color ship this close is forcefully pulled in and
-// locked. Matched to the land-collision skip radius (90px) so there is no ring
-// where a ship neither docks nor bounces (which is what let ships clip land).
-export const DOCK_APPROACH_RADIUS = 90;
+// Catch radius — small, so a ship must physically sail INTO the berth entrance
+// before the dock takes over for the final alignment. No long-range magnet.
+export const DOCK_APPROACH_RADIUS = 28;
 
 export class Dock {
   /**
@@ -91,6 +90,15 @@ export class Dock {
     if (!this.occupied || !this.unloadingBoat) return;
 
     const boat = this.unloadingBoat;
+
+    // The reserved boat no longer exists (despawned or sunk) — free the berth
+    // so the dock doesn't stay blocked forever.
+    if (!boat.alive || boat.state === 'SUNK') {
+      this.occupied      = false;
+      this.unloadingBoat = null;
+      this.unloadTimer   = 0;
+      return;
+    }
 
     // Still sailing into the berth — hold the reservation but don't unload yet.
     if (boat.state === 'DOCKING') return;

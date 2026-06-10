@@ -14,7 +14,6 @@ export const BOAT_STATES = {
   DOCKING:      'DOCKING',       // sailing the final stretch into the berth
   UNLOADING:    'UNLOADING',
   WAITING_EXIT: 'WAITING_EXIT',
-  EXIT_TURNING: 'EXIT_TURNING',  // rotating 180° in place before departing
   EXITING:      'EXITING',
   SUNK:         'SUNK',
 };
@@ -79,7 +78,8 @@ export class Boat {
 
     this.sprite       = null;   // pre-fetched by Spawner
     this.highlighted  = false;  // true while player's finger is on this boat
-    this.spinState    = null;   // { elapsed, duration, spinRate, exitAngle } when vortex-caught
+    this.spinState    = null;   // { elapsed, duration, startAngle } when vortex-caught
+    this.vortexCd     = 0;      // brief immunity after a spin so it can drift clear
     this.targetDockId = null;   // assigned dock id (set by Spawner)
 
     this.state = BOAT_STATES.SAILING;
@@ -128,6 +128,8 @@ export class Boat {
   // ---------- Update ----------
 
   update(dt, canvasWidth, canvasHeight) {
+    if (this.vortexCd > 0) this.vortexCd -= dt;
+
     // DOCKING: physically sail the rest of the way into the berth (no teleport),
     // turning the bow to face the dock's inward angle, then begin unloading.
     if (this.state === BOAT_STATES.DOCKING) {
@@ -155,13 +157,16 @@ export class Boat {
     if (this.state === BOAT_STATES.SUNK ||
         this.state === BOAT_STATES.UNLOADING) return;
 
-    // Vortex spin: rotate in place, no translation.
+    // Vortex spin: exactly ONE quick 360° rotation in place, then recover.
     if (this.spinState) {
       this.spinState.elapsed += dt;
-      this.angle += this.spinState.spinRate * dt;
-      if (this.spinState.elapsed >= this.spinState.duration) {
-        this.angle     = this.spinState.exitAngle;
+      const t = Math.min(1, this.spinState.elapsed / this.spinState.duration);
+      this.angle = this.spinState.startAngle + t * Math.PI * 2;  // one full turn
+      if (t >= 1) {
+        this.angle     = this.spinState.startAngle;   // back to its last heading
         this.spinState = null;
+        this.state     = BOAT_STATES.SAILING;         // resume drifting, await path
+        this.vortexCd  = 2.0;   // immune briefly so it drifts clear, no re-spin
       }
       return;
     }
@@ -238,20 +243,23 @@ export class Boat {
     const dx = c.x - this.x, dy = c.y - this.y;
     const dist = Math.hypot(dx, dy);
 
-    if (dist > 2) {
-      // Forceful pull toward the berth center (brisk, never overshoots).
+    if (dist >= 1) {
+      // Constant SAILING-speed approach — never faster than open-water speed.
+      // Only the final ~3px ease off slightly so the boat settles like a heavy
+      // hull instead of snapping. min(step,dist) never overshoots the center.
       this.angle = this._lerpAngle(this.angle, targetAngle, dt);
-      const pull = Math.max(this.speed, 180);
-      const step = Math.min(pull * dt, dist);
+      const ease = dist < 3 ? Math.max(0.4, dist / 3) : 1;
+      const step = Math.min(this.speed * ease * dt, dist);
       this.x += (dx / dist) * step;
       this.y += (dy / dist) * step;
     } else {
-      // At center — finish aligning the bow, then dock.
+      // Reached the center (< 1px) — pin position and snap the bow exactly to
+      // the dock's inward angle so no floating-point slant remains.
       this.x = c.x;
       this.y = c.y;
       this.angle = this._lerpAngle(this.angle, targetAngle, dt);
       if (Math.abs(this._angleDelta(this.angle, targetAngle)) < 0.05) {
-        this.angle = targetAngle;          // perfect final alignment
+        this.angle = targetAngle;          // exact final alignment
         this.state = BOAT_STATES.UNLOADING;
         if (this.dockTarget) this.dockTarget.unloadTimer = 0;
       }
@@ -287,19 +295,8 @@ export class Boat {
       ctx.fill();
     }
 
-    // Pulsing white glow while waiting for the player to draw an exit path.
-    if (this.state === BOAT_STATES.WAITING_EXIT) {
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 200);
-      const glowR = Math.max(w, h) * (0.7 + pulse * 0.35);
-      const grad  = ctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
-      grad.addColorStop(0,   `rgba(255,255,255,${0.30 + pulse * 0.35})`);
-      grad.addColorStop(0.55,`rgba(255,255,255,${0.10 + pulse * 0.14})`);
-      grad.addColorStop(1,   'rgba(255,255,255,0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, glowR, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    // (No glow when empty/waiting — the only feedback is the unload sound and
+    // the absence of cargo blocks. The empty ship just sits quietly.)
 
     ctx.rotate(this.angle);
 

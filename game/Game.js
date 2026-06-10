@@ -115,23 +115,24 @@ export class Game {
   }
 
   /**
-   * For each dock, derive the "inward" heading (toward the attached landmass)
-   * from the collision map. Boats align their bow to this when docking.
+   * Assign each dock its exact "inward" heading (bow direction when parked).
+   * Hardcoded clean angles (multiples of π/8) matched to the visual berth
+   * orientation on the map — the auto-derived landmass angles were off by a
+   * few degrees and left parked ships looking crooked.
    */
   _computeDockInwardAngles() {
     if (!this.map) return;
+    const DEG = Math.PI / 180;
+    const EXACT_ANGLES = {
+      1: -97.5 * DEG,   // north shore pier (tilted ~7.5° off vertical)
+      2: -97.5 * DEG,   // north shore pier
+      3:  67.5 * DEG,   // south-east pier
+      4:  67.5 * DEG,   // south-east pier
+      5: -28.0 * DEG,   // island west berth
+      6: 147.0 * DEG,   // island east berth
+    };
     for (const dock of this.map.docks) {
-      let sx = 0, sy = 0, hits = 0;
-      for (const R of [25, 40, 55]) {
-        for (let i = 0; i < 24; i++) {
-          const a  = (i / 24) * Math.PI * 2;
-          const px = dock.cx + Math.cos(a) * R;
-          const py = dock.cy + Math.sin(a) * R;
-          if (this.map.isLand(px, py)) { sx += Math.cos(a); sy += Math.sin(a); hits++; }
-        }
-      }
-      // Points toward the surrounding land = into the berth. Null if all water.
-      dock.inwardAngle = hits > 0 ? Math.atan2(sy, sx) : null;
+      dock.inwardAngle = EXACT_ANGLES[dock.id] ?? null;
     }
   }
 
@@ -153,6 +154,17 @@ export class Game {
       this.sound.startLoops();   // safe to call multiple times — guards internally
       this.spawner.reset();
       this.score.reset();
+      // Release every berth — a game over can strand a dock as "occupied" by a
+      // boat that no longer exists, permanently refusing ships next round.
+      if (this.map) {
+        for (const dock of this.map.docks) {
+          dock.occupied      = false;
+          dock.unloadingBoat = null;
+          dock.unloadTimer   = 0;
+          dock.flashTimer    = 0;
+          dock.snapHighlight = false;
+        }
+      }
       this.warningPairs    = [];
       this._hornCooldown   = 0;
       this.impactBurst     = null;
@@ -359,11 +371,43 @@ export class Game {
       if (boat.cargoForColor(dock.color) <= 0) continue;
 
       const dist = Math.hypot(boat.x - dock.center.x, boat.y - dock.center.y);
-      if (dist <= DOCK_APPROACH_RADIUS) {
-        dock.beginDocking(boat);   // reserve + sail in (no teleport)
-        return;
+      if (dist > DOCK_APPROACH_RADIUS) continue;
+
+      // Only "catch" the ship (disabling land collisions) once a HULL-WIDTH
+      // corridor to the berth is clear of land/breakwaters — otherwise it must
+      // keep SAILING and physically route in itself.
+      if (!this._clearLineToDock(boat.x, boat.y, dock, boat.hh)) continue;
+
+      dock.beginDocking(boat);   // reserve + final alignment (no teleport)
+      return;
+    }
+  }
+
+  /**
+   * True if a corridor as wide as the ship's hull, from (x,y) to the dock
+   * center, is free of land — so no part of the hull would clip a barrier when
+   * pulled in. `halfWidth` is the hull's half-beam. Land within OPENING of the
+   * center (the berth itself) is ignored.
+   */
+  _clearLineToDock(x, y, dock, halfWidth = 0) {
+    const OPENING = 15;           // px around the berth that is the dock itself
+    const cx = dock.center.x, cy = dock.center.y;
+    const dx = cx - x, dy = cy - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1) return true;
+    const ux = dx / dist, uy = dy / dist;     // along the corridor
+    const ox = -uy,       oy = ux;            // perpendicular (hull width)
+    const offsets = halfWidth > 0 ? [-halfWidth, -halfWidth * 0.5, 0, halfWidth * 0.5, halfWidth] : [0];
+    const n = Math.max(1, Math.ceil(dist / 3));
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      const bx = x + dx * t, by = y + dy * t;
+      if (Math.hypot(bx - cx, by - cy) < OPENING) continue;  // skip the berth
+      for (const o of offsets) {
+        if (this.map.isLand(bx + ox * o, by + oy * o)) return false;
       }
     }
+    return true;
   }
 
   render() {
@@ -528,14 +572,14 @@ export class Game {
     if (!this.map) return;
     // 1. Background + dock markers.
     this.map.render(ctx);
-    // 2. Incoming-boat warning arrows (behind the boats).
-    this.spawner.renderArrows(ctx);
-    // 3. Drawn paths.
-    this.pathInput.render(ctx);
-    // 4. Vortices (behind boats).
+    // 2. Vortices (dynamic sea element — below the boats).
     for (const v of this.spawner.vortices) v.render(ctx, this.assets);
-    // 5. Active boats.
+    // 3. Active boats (hull + dynamic cargo).
     for (const boat of this.spawner.boats) boat.render(ctx, this.assets);
+    // 4. Drawn paths — overlay ABOVE the ships.
+    this.pathInput.render(ctx);
+    // 5. Incoming-boat warning arrows (UI layer).
+    this.spawner.renderArrows(ctx);
     // 6. HUD always on top.
     this.ui.render(ctx);
     // 6b. Pause button in the HUD.
@@ -765,17 +809,29 @@ export class Game {
    * Falls back to null after 20 failed attempts.
    */
   _randomOpenWaterPos() {
-    // Sample random points within the canvas and accept only open water
-    // that isn't too close to any dock.
+    // Sample random points within the canvas and accept only open water that
+    // is > 150px from every dock and > 80px from any land pixel.
     const margin = 80;
     for (let i = 0; i < 40; i++) {
       const x = margin + Math.random() * (CANVAS_WIDTH  - margin * 2);
       const y = margin + Math.random() * (CANVAS_HEIGHT - margin * 2);
-      if (this.map.isLand(x, y)) continue;
-      if (this.map.docks.some((d) => Math.hypot(x - d.center.x, y - d.center.y) < 80)) continue;
+      if (this.map.docks.some((d) => Math.hypot(x - d.center.x, y - d.center.y) < 150)) continue;
+      if (!this._landClearance(x, y, 80)) continue;
       return { x, y };
     }
     return null;
+  }
+
+  /** True if no land lies within `r` px of (x, y) — sampled rings + center. */
+  _landClearance(x, y, r) {
+    if (this.map.isLand(x, y)) return false;
+    for (const R of [r * 0.5, r]) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        if (this.map.isLand(x + Math.cos(a) * R, y + Math.sin(a) * R)) return false;
+      }
+    }
+    return true;
   }
 
   // --- Land collision helpers ---
@@ -789,12 +845,13 @@ export class Game {
   _firstLandPoint(boat) {
     const { x, y, angle, radius } = boat;
 
-    // Skip land collision near ANY dock whose color the boat still carries, so
-    // it can reach matching docks that sit on/against the island.
+    // Skip land collision near a matching dock ONLY when the ship has a clear
+    // line to it — so it can sail cleanly into a coast/island berth, but still
+    // bounces off a breakwater that's between it and the dock.
     for (const dock of this.map.docks) {
       if (boat.cargoForColor(dock.color) <= 0) continue;
       const dist = Math.hypot(x - dock.center.x, y - dock.center.y);
-      if (dist < 90) return null;
+      if (dist < 90 && this._clearLineToDock(x, y, dock, boat.hh)) return null;
     }
 
     const cos = Math.cos(angle), sin = Math.sin(angle);
