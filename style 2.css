@@ -1,0 +1,38 @@
+/* Full-screen, no-scroll, black background. Tuned for desktop + iPad Safari. */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #555555;  /* gray letterbox bars */
+}
+
+body {
+  /* Stop iOS Safari rubber-band scrolling / pull-to-refresh and tap delays. */
+  position: fixed;
+  inset: 0;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  background: #555555;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  background: #555555;
+}
+
+#game {
+  display: block;
+  /* Canvas sizing and position driven by Canvas.js (letterboxed 4:3). */
+  touch-action: none; /* we handle all touch input ourselves */
+}
