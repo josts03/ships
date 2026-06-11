@@ -33,7 +33,9 @@ export const IMG_SCALE_Y = CANVAS_HEIGHT / IMAGE_H;  // ≈ 0.4286
 export const DOCK_COLORS = ['#FFD700', '#8B5CF6'];   // yellow, purple
 
 export const BOAT_SPEEDS = { small: 120, medium: 80, large: 50 }; // px / second
-export const UNLOAD_TIME_PER_CARGO = 1750; // ms per cargo block
+// Global unload pace (ms per cargo block) — defined in Dock.js, the single
+// source of truth used by every dock; re-exported here for discoverability.
+export { UNLOAD_INTERVAL_MS } from './Dock.js';
 export const CARGO_COUNTS = { small: 1, medium: 2, large: 4 };
 export const VORTEX_DURATION = 15000; // ms — vortex stays active for 15 seconds
 // Boat-to-boat collision now uses per-boat ellipse half-dimensions (hw/hh),
@@ -235,7 +237,10 @@ export class Game {
           break;
         }
         const captured = this.pathInput.onPointerDown(x, y, pointerId);
-        if (captured) el.setPointerCapture(pointerId);
+        if (captured) {
+          el.setPointerCapture(pointerId);
+          this.sound.play('shipSelected');   // ship touched/selected audio hook
+        }
         break;
       }
       case GAME_STATES.PAUSED:
@@ -320,13 +325,18 @@ export class Game {
         this._hornCooldown = 2.0;
       }
 
-      // Tick dock unload timers.
+      // Tick dock unload timers — one block per UNLOAD_INTERVAL_MS, at every
+      // dock equally (the pace is enforced inside Dock.update).
       for (const dock of this.map.docks) {
-        dock.update(dt, () => {
-          this.sound.play('plink');
-          this.score.add(1);
-          this._checkVortexSpawn();
-        });
+        dock.update(
+          dt,
+          () => {
+            this.sound.play('cargoUnloaded');
+            this.score.add(1);
+            this._checkVortexSpawn();
+          },
+          () => this.sound.play('shipEmpty'),
+        );
       }
 
       // Update vortices. A ship caught by an active vortex has its path erased,
@@ -576,7 +586,8 @@ export class Game {
     for (const v of this.spawner.vortices) v.render(ctx, this.assets);
     // 3. Active boats (hull + dynamic cargo).
     for (const boat of this.spawner.boats) boat.render(ctx, this.assets);
-    // 4. Drawn paths — overlay ABOVE the ships.
+    // 4. Drawn paths — MUST stay after the boat loop so the white player line
+    //    renders ON TOP of every ship hull, visibly crossing the deck.
     this.pathInput.render(ctx);
     // 5. Incoming-boat warning arrows (UI layer).
     this.spawner.renderArrows(ctx);

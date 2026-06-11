@@ -353,6 +353,14 @@ export class PathDrawing {
   }
 
   _renderPreview(ctx) {
+    const boat = this.selectedBoat;
+    // Origin is the ship's CENTER — rawPoints[0] is where the hull sat at
+    // pointerdown, which the live-following ship has since moved past. Skip
+    // the points it already consumed so the line stretches from the deck to
+    // the fingertip instead of trailing underneath the hull.
+    const start = (boat.path === this.rawPoints) ? boat.pathIndex : 0;
+    if (start >= this.rawPoints.length) return;
+
     ctx.save();
     ctx.globalAlpha = 0.45;
     ctx.strokeStyle = '#ffffff';
@@ -360,8 +368,8 @@ export class PathDrawing {
     ctx.setLineDash([]);          // solid line
 
     ctx.beginPath();
-    ctx.moveTo(this.rawPoints[0].x, this.rawPoints[0].y);
-    for (let i = 1; i < this.rawPoints.length; i++) {
+    ctx.moveTo(boat.x, boat.y);
+    for (let i = start; i < this.rawPoints.length; i++) {
       ctx.lineTo(this.rawPoints[i].x, this.rawPoints[i].y);
     }
     ctx.stroke();

@@ -9,8 +9,13 @@
  * in-progress path is snapping to this dock.
  */
 
-// Mirror of Game.js UNLOAD_TIME_PER_CARGO (in seconds) — avoids circular import.
-const UNLOAD_INTERVAL = 1.75;
+// THE global unload pace — single source of truth for EVERY dock (Game.js
+// re-exports it with the other gameplay constants). One cargo block leaves the
+// ship exactly this often while it is parked in the UNLOADING state; the timer
+// is strictly dt-driven, so no dock can run faster or slower than the others.
+export const UNLOAD_INTERVAL_MS = 800;
+const UNLOAD_INTERVAL = UNLOAD_INTERVAL_MS / 1000;  // seconds (dt is seconds)
+
 const FLASH_DURATION  = 0.55;  // seconds for wrong-color red flash
 
 // Catch radius — small, so a ship must physically sail INTO the berth entrance
@@ -81,10 +86,12 @@ export class Dock {
 
   /**
    * Tick the unload sequence.
-   * @param {number}   dt      seconds since last frame
-   * @param {Function} onPlink called once per cargo block removed
+   * @param {number}   dt          seconds since last frame
+   * @param {Function} onPlink     called once per cargo block removed
+   * @param {Function} onShipEmpty called once when the ship's LAST block (any
+   *                               color) is removed — it is ready to turn
    */
-  update(dt, onPlink) {
+  update(dt, onPlink, onShipEmpty) {
     if (this.flashTimer > 0) this.flashTimer = Math.max(0, this.flashTimer - dt);
 
     if (!this.occupied || !this.unloadingBoat) return;
@@ -120,10 +127,16 @@ export class Dock {
         if (dist > 80) {
           this.occupied      = false;
           this.unloadingBoat = null;
+          this.unloadTimer   = 0;
         }
       }
       return;
     }
+
+    // STRICT global pace: the timer advances ONLY while the ship is parked in
+    // the UNLOADING state — never during the approach, the exit wait, or the
+    // departure — so every dock unloads at exactly UNLOAD_INTERVAL_MS.
+    if (boat.state !== 'UNLOADING') return;
 
     this.unloadTimer += dt;
     if (this.unloadTimer >= UNLOAD_INTERVAL) {
@@ -135,6 +148,8 @@ export class Dock {
         // This dock's cargo is done — turn to face the ocean and wait for a path.
         this._sendToWaitingExit(boat);
         // Berth stays occupied until the boat leaves (handled above next tick).
+        // Fully empty ship (no other-color cargo left) is ready to turn around.
+        if (boat.cargoRemaining === 0) onShipEmpty?.();
       }
     }
   }
