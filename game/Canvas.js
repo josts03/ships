@@ -12,7 +12,9 @@
 export class Canvas {
   constructor(canvasElement, logicalWidth, logicalHeight) {
     this.canvas = canvasElement;
-    this.ctx = canvasElement.getContext('2d');
+    // alpha:false — opaque backing store skips per-frame page compositing;
+    // desynchronized — lower input-to-paint latency while drawing paths.
+    this.ctx = canvasElement.getContext('2d', { alpha: false, desynchronized: true });
 
     this.width = logicalWidth;
     this.height = logicalHeight;
@@ -69,17 +71,19 @@ export class Canvas {
     const sy = this.canvas.height / GAME_H;
     this.ctx.setTransform(sx, 0, 0, sy, 0, 0);
     this.ctx.imageSmoothingEnabled = true;
-    this.ctx.imageSmoothingQuality = 'high';
+    // 'medium' — sprites are small, so the visual difference from 'high' is
+    // negligible but every drawImage gets cheaper. The big background is
+    // pre-scaled once in GameMap with high quality, not filtered per frame.
+    this.ctx.imageSmoothingQuality = 'medium';
 
     this.scale = scale;
   }
 
-  /** Clear the whole backing store and paint it `color`. */
+  /** Paint the whole backing store `color` (context is opaque — one pass). */
   clear(color = '#000') {
     const ctx = this.ctx;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0); // identity = device pixels
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.restore(); // back to the logical transform

@@ -38,6 +38,8 @@ export const BOAT_SPEEDS = { small: 120, medium: 80, large: 50 }; // px / second
 export { UNLOAD_INTERVAL_MS } from './Dock.js';
 export const CARGO_COUNTS = { small: 1, medium: 2, large: 4 };
 export const VORTEX_DURATION = 15000; // ms — vortex stays active for 15 seconds
+// Fast-forward (the ">>" HUD button): gameplay time runs this much faster.
+export const FAST_FORWARD_SCALE = 2;
 // Boat-to-boat collision now uses per-boat ellipse half-dimensions (hw/hh),
 // set on each Boat from its measured sprite size — see Boat.js / Collision.js.
 
@@ -94,8 +96,12 @@ export class Game {
       height: 96,
     };
 
-    // Pause button (top-right of HUD) + pause-menu buttons (set when drawn).
-    this.pauseButton  = { x: CANVAS_WIDTH - 44, y: 6, width: 32, height: 32 };
+    // HUD buttons (drawn by UI.js — these are the hit areas, kept in sync):
+    // pause lives at the left end of the CARGO/RECORD banner, fast-forward
+    // (">>") hangs from the top-right corner. Pause-menu buttons set when drawn.
+    this.pauseButton  = { x: 14, y: 0, width: 48, height: 48 };
+    this.fastButton   = { x: CANVAS_WIDTH - 66, y: 0, width: 56, height: 46 };
+    this.fastMode     = false;   // ">>" toggle — gameplay runs at 2× while on
     this._resumeBtn   = null;
     this._quitBtn     = null;
 
@@ -169,6 +175,7 @@ export class Game {
       }
       this.warningPairs    = [];
       this._hornCooldown   = 0;
+      this.fastMode        = false;
       this.impactBurst     = null;
       this.gameOverSlide   = 0;
       this._goTryAgainBtn  = null;
@@ -231,9 +238,13 @@ export class Game {
         }
         break;
       case GAME_STATES.PLAYING: {
-        // Pause button takes priority over path drawing.
+        // HUD buttons take priority over path drawing.
         if (this._inRect(x, y, this.pauseButton)) {
           this.pause();
+          break;
+        }
+        if (this._inRect(x, y, this.fastButton)) {
+          this.fastMode = !this.fastMode;
           break;
         }
         const captured = this.pathInput.onPointerDown(x, y, pointerId);
@@ -283,6 +294,9 @@ export class Game {
 
   update(dt) {
     if (this.state === GAME_STATES.PLAYING) {
+      // Fast-forward scales gameplay time only (menus/animations unaffected).
+      if (this.fastMode) dt *= FAST_FORWARD_SCALE;
+
       this.spawner.update(dt);
 
       for (const boat of this.spawner.boats) {
@@ -591,27 +605,10 @@ export class Game {
     this.pathInput.render(ctx);
     // 5. Incoming-boat warning arrows (UI layer).
     this.spawner.renderArrows(ctx);
-    // 6. HUD always on top.
+    // 6. HUD always on top (banner + pause + fast-forward, drawn by UI.js).
     this.ui.render(ctx);
-    // 6b. Pause button in the HUD.
-    this._renderPauseButton(ctx);
     // 7. Debug overlay (topmost — shows only when enabled).
     this.debug.render(ctx);
-  }
-
-  /** Draw the small "||" pause button in the top-right of the HUD. */
-  _renderPauseButton(ctx) {
-    const b = this.pauseButton;
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    this._roundRectPath(ctx, b.x, b.y, b.width, b.height, 6);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    const barW = 5, gap = 6, h = 16;
-    const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
-    ctx.fillRect(cx - gap, cy - h / 2, barW, h);
-    ctx.fillRect(cx + gap - barW, cy - h / 2, barW, h);
-    ctx.restore();
   }
 
   /** Dim overlay + Resume / Quit buttons shown while PAUSED. */
